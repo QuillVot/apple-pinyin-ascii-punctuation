@@ -1,5 +1,5 @@
 {
-  description = "apple-pinyin-ascii-punctuation: ASCII punctuation for Apple Simplified Pinyin on macOS";
+  description = "apple-pinyin-ascii-punctuation: ANSI-key ASCII punctuation across input sources on macOS";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";

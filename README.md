@@ -4,15 +4,16 @@
 
 Home Manager module for PinyinASCII (`PinyinASCII.app`, command `pinyin-ascii`).
 
-ASCII punctuation for Apple's Simplified Pinyin input method on macOS with an ANSI keyboard layout. The complete Home Manager module, including its C source, build and tests, lives in [`apple-pinyin-ascii-punctuation.nix`](apple-pinyin-ascii-punctuation.nix).
+Maps physical ANSI US key positions to ASCII punctuation across input sources on macOS. The complete Home Manager module, including its C source, build and tests, lives in [`apple-pinyin-ascii-punctuation.nix`](apple-pinyin-ascii-punctuation.nix).
 
 Nix compiles the C program with the SDK supplied by the pinned nixpkgs toolchain; no personal SDK path is needed. At runtime, PinyinASCII is a native background program using a macOS event tap and Accessibility APIs. It has no menu bar item by default.
 
 ## Behavior
 
-- Converts the 32 ASCII punctuation symbols while Apple Simplified Pinyin is selected. Other input sources pass through.
+- Maps the 32 ASCII punctuation symbols without checking or restricting the selected input source.
 - Preserves events with Command, Option, Control or Fn held. Unshifted number keys remain available for candidate selection.
 - Preserves the five unshifted keys `'`, `-`, `=`, `[` and `]` while composition is active or its state is unknown, protecting `xi'an` and candidate navigation. Shifted punctuation still converts.
+- Only those five unshifted keys query composition state on key down. Other keys, shortcuts and all key-up events skip AX queries.
 - Copies the original keyboard event and changes its Unicode text, preserving its routing, key code, modifiers and repeat state.
 
 ```text
@@ -59,7 +60,7 @@ nix flake check --no-write-lock-file
 nix flake check --all-systems --no-build --no-write-lock-file
 ```
 
-The first check command builds the current system's package, module and tools checks. The package build tests all 32 mappings, modifier handling, composition policy and event-copy metadata. The tools check builds the tools and tests their help arguments; it does not open the probe UI or start keyboard monitoring. The second command evaluates all declared Darwin systems without cross-building them. Neither command installs or activates a Home Manager configuration.
+The first check command builds the current system's package, module and tools checks. The package build tests all 32 mappings, modifier handling, composition policy and event-copy metadata. It also tests the actual event callback with a composition-query test double: query scope, key-down/up pairing, repeated key downs and state reset. The tools check builds the tools and tests their help arguments; it does not open the probe UI or start keyboard monitoring. The second command evaluates all declared Darwin systems without cross-building them. Neither command installs or activates a Home Manager configuration.
 
 These checks do not establish that real applications expose useful composition ranges or that input-method navigation and permissions work interactively.
 
@@ -73,6 +74,14 @@ The Home Manager launchd label is `org.nix-community.home.pinyin-ascii`. Its log
 launchctl print "gui/$(id -u)/org.nix-community.home.pinyin-ascii"
 tail -n 10 ~/Library/Logs/pinyin-ascii.log
 ```
+
+After an update, if the permission toggle is on but the current service never logs a new `PinyinASCII active` entry, check the macOS TCC logs. Use the recovery below only if they report `Failed to match existing code requirement` for `org.nixconfig.pinyin-ascii`: the saved grant may still refer to an older ad-hoc signature. Apple explains how code requirements identify an app in [TN2206](https://developer.apple.com/library/archive/technotes/tn2206/_index.html).
+
+```sh
+tccutil reset Accessibility org.nixconfig.pinyin-ascii
+```
+
+Confirm that the reset succeeds, then add and allow the **current installed** `PinyinASCII.app` again on the permission page. This resets only this app's Accessibility decision; it does not grant access. The service retries automatically. Confirm a new `PinyinASCII active` log entry and an enabled event tap for its PID before resuming tests. This recovery is for a confirmed signature mismatch, not a routine update step.
 
 Set `services.apple-pinyin-ascii-punctuation.enable = false;` and apply Home Manager to disable it.
 
@@ -96,12 +105,16 @@ The repository contains source only. Build outputs, local probe logs and other g
 
 ## Interactive verification and limits
 
-1. Select Apple Simplified Pinyin and type all 32 symbols above using their physical ANSI keys. Check Command/Option/Control/Fn combinations and unshifted number selection too. Pasting the symbols does not test the conversion.
+1. Test both ABC and Apple Simplified Pinyin. With no active composition, type all 32 symbols above using their physical ANSI keys. Check Command/Option/Control/Fn combinations, unshifted number selection, key repeats and releasing Shift before key up. Pasting the symbols does not test the conversion.
 2. Compose `xi'an` and confirm that the unshifted apostrophe remains a Pinyin separator.
 3. Expand the candidate window, press `]` to advance and `[` to return, and compare the candidate at the same numbered position before and after. A key-dispatch log alone does not prove that a page changed.
 4. Test `-` and ordinary ANSI `=` separately. ANSI `=` is virtual key 24; keypad `=` is key 81 and is outside this mapping. Validation observed macOS automation sending `equal` with an unexpected Shift modifier, so confirm ambiguous results with a physical key. A `=`/`-` round trip in a log is insufficient evidence that each individual key paged correctly.
 
-Applications may ignore event Unicode text or apply their own smart punctuation and text replacements. AX support varies: an unknown composition state protects only the five unshifted sensitive keys above; other mapped punctuation still converts. Non-ANSI layouts and other input methods are outside the supported scope. Build checks cannot replace these application-level checks.
+Applications may ignore event Unicode text or apply their own smart punctuation and text replacements. AX support varies: an unknown composition state preserves the five unshifted sensitive keys even under ABC; other mapped punctuation still converts.
+
+Some frameworks return an empty AX attribute even during composition; an empty value is not a universal proof that composition is inactive. Directed synthetic key events can also behave differently from physical input. Verify separators and candidate navigation with physical keys in each application, especially Electron applications.
+
+The mapping uses ANSI US physical key positions, not the selected input source's character layout. Other symbol layouts may therefore have their normal characters replaced. Other input methods are also affected, but their composition and navigation keys have not been individually verified; the five-key protection does not cover every input method's special keys. Build checks cannot replace these application-level checks.
 
 ## License and references
 

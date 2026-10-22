@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 PinyinASCII contributors
 #
-# Home Manager 模块：Apple 简体拼音下的 ANSI / ASCII 标点转换。
+# Home Manager 模块：macOS 全输入源的 ANSI 键位 / ASCII 标点转换。
 # 用法：imports = [ ./apple-pinyin-ascii-punctuation.nix ];
 #       services.apple-pinyin-ascii-punctuation.enable = true;
 # 需要 macOS 的辅助功能授权；不支持的组词状态不会被猜成“没有组词”。
-# 字体、其他输入法、系统键位和应用自己的文字替换规则均不由此模块管理。
+# 按美式物理键位映射，不跟随输入源布局；不管理字体或应用自己的文字替换规则。
 {
   config,
   pkgs,
@@ -83,19 +83,20 @@ let
       )}
     };
 
-    /* 无 Shift 的单引号用于 xi'an 分音，-= 和 [] 用于候选导航。 */
-    static bool hasPinyinMeaning(unsigned key) {
+    /* 无 Shift 的单引号用于 xi'an 分音，-= 和 [] 用于候选导航。
+       所有输入源共用这五键的保守保护，不据输入源名称猜测组词状态。 */
+    static bool isCompositionKey(unsigned key) {
       return key == kVK_ANSI_Quote || key == kVK_ANSI_Minus || key == kVK_ANSI_Equal ||
              key == kVK_ANSI_LeftBracket || key == kVK_ANSI_RightBracket;
     }
 
-    /* 纯策略函数：返回 ASCII 或 0（保留原事件），不访问输入法和 AX。 */
-    static UniChar asciiSymbol(unsigned key, CGEventFlags flags, bool pinyin, int marked) {
+    /* 纯策略函数：返回 ASCII 或 0（保留原事件），不查询输入源或 AX。 */
+    static UniChar asciiSymbol(unsigned key, CGEventFlags flags, int marked) {
       CGEventFlags shortcuts = kCGEventFlagMaskCommand | kCGEventFlagMaskControl |
                                kCGEventFlagMaskAlternate | kCGEventFlagMaskSecondaryFn;
       bool shift = (flags & kCGEventFlagMaskShift) != 0;
-      if (!pinyin || key >= KEYCODE_COUNT || (flags & shortcuts) ||
-          (!shift && hasPinyinMeaning(key) && marked != COMPOSITION_CLEAR))
+      if (key >= KEYCODE_COUNT || (flags & shortcuts) ||
+          (!shift && isCompositionKey(key) && marked != COMPOSITION_CLEAR))
         return 0;
       return symbolsByKeyCode[key][shift] == ' ' ? 0 : (unsigned char)symbolsByKeyCode[key][shift];
     }
@@ -108,8 +109,44 @@ let
       return result;
     }
 
-    /* 构建期测试不启动监听。真实组词、AX 查询和权限生命周期仍须交互验证。 */
+    static CFMachPortRef eventTap;
+    /* 保存最近一次按下的替换字符，供抬键配对；自动重复会重新判断策略。 */
+    static UniChar keyDownSymbols[KEYCODE_COUNT];
+    static CGEventRef handleKeyboardEvent(CGEventTapProxy proxy, CGEventType type,
+                                          CGEventRef event, void *context);
+
+    /* 构建期用计数替身代替 AX，共用真实回调，但不创建事件监听端口。 */
     #ifdef TEST
+    static int testCompositionState = COMPOSITION_CLEAR;
+    static unsigned testCompositionQueries;
+    static int compositionStateForProcess(pid_t pid) {
+      assert(pid == 1234);
+      testCompositionQueries++;
+      return testCompositionState;
+    }
+
+    /* 同时核对字符、透传和查询次数，避免只测策略而漏测回调路径。 */
+    static void checkKeyEvent(CGEventType type, CGKeyCode key, CGEventFlags flags,
+                              UniChar expected, unsigned queries) {
+      unsigned before = testCompositionQueries;
+      CGEventRef event = CGEventCreateKeyboardEvent(NULL, key, type == kCGEventKeyDown);
+      assert(event);
+      CGEventSetFlags(event, flags);
+      CGEventSetIntegerValueField(event, kCGEventTargetUnixProcessID, 1234);
+      CGEventRef result = handleKeyboardEvent(NULL, type, event, NULL);
+      assert(testCompositionQueries - before == queries);
+      if (expected) {
+        UniChar value = 0;
+        UniCharCount length = 0;
+        assert(result != event);
+        CGEventKeyboardGetUnicodeString(result, 1, &length, &value);
+        assert(length == 1 && value == expected);
+        assert(CGEventGetType(result) == type && CGEventGetFlags(result) == flags);
+        CFRelease(result);
+      } else assert(result == event);
+      CFRelease(event);
+    }
+
     int main(void) {
       const char *all = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
       bool seen[KEYCODE_COUNT] = {0};
@@ -117,38 +154,72 @@ let
       for (unsigned key = 0; key < KEYCODE_COUNT; key++) {
         for (unsigned shift = 0; shift < 2; shift++) {
           CGEventFlags flags = shift ? kCGEventFlagMaskShift : 0;
-          UniChar value = asciiSymbol(key, flags, true, COMPOSITION_CLEAR);
+          UniChar value = asciiSymbol(key, flags, COMPOSITION_CLEAR);
           if (!value) continue;
           assert(value < KEYCODE_COUNT && strchr(all, value) && !seen[value]);
           seen[value] = true;
           count++;
-          assert(asciiSymbol(key, flags, false, COMPOSITION_CLEAR) == 0);
           CGEventFlags shortcuts[] = { kCGEventFlagMaskCommand, kCGEventFlagMaskControl,
                                       kCGEventFlagMaskAlternate, kCGEventFlagMaskSecondaryFn };
-          for (unsigned i = 0; i < 4; i++)
-            assert(asciiSymbol(key, flags | shortcuts[i], true, COMPOSITION_CLEAR) == 0);
-          // 测试预期独立于生产 hasPinyinMeaning()，避免两者一起出错仍通过。
-          assert(asciiSymbol(key, flags, true, COMPOSITION_MARKED) ==
-                 (!shift && strchr("'-=[]", value) != NULL ? 0 : value));
-          assert(asciiSymbol(key, flags, true, COMPOSITION_UNKNOWN) ==
-                 (!shift && strchr("'-=[]", value) != NULL ? 0 : value));
+          for (unsigned i = 0; i < 4; i++) {
+            assert(asciiSymbol(key, flags | shortcuts[i], COMPOSITION_CLEAR) == 0);
+            checkKeyEvent(kCGEventKeyDown, key, flags | shortcuts[i], 0, 0);
+            checkKeyEvent(kCGEventKeyUp, key, flags | shortcuts[i], 0, 0);
+          }
+          // 预期独立于 isCompositionKey()，避免实现与测试一起出错仍通过。
+          bool sensitive = !shift && strchr("'-=[]", value) != NULL;
+          for (int state = COMPOSITION_UNKNOWN; state <= COMPOSITION_MARKED; state++) {
+            testCompositionState = state;
+            UniChar expected = sensitive && state != COMPOSITION_CLEAR ? 0 : value;
+            assert(asciiSymbol(key, flags, state) == expected);
+            checkKeyEvent(kCGEventKeyDown, key, flags, expected, sensitive ? 1 : 0);
+            // 松开 Shift 或加上快捷键修饰键，抬键仍与按下一致，且不查询 AX。
+            checkKeyEvent(kCGEventKeyUp, key, kCGEventFlagMaskCommand, expected, 0);
+          }
         }
       }
       assert(count == 32);
       for (const char *p = all; *p; p++) assert(seen[(unsigned char)*p]);
-      assert(asciiSymbol(KEYCODE_COUNT, 0, true, COMPOSITION_CLEAR) == 0);
-      assert(asciiSymbol(kVK_ANSI_A, 0, true, COMPOSITION_CLEAR) == 0);  // a，仍由拼音处理。
+      assert(asciiSymbol(KEYCODE_COUNT, 0, COMPOSITION_CLEAR) == 0);
+      // 非映射键及普通数字不得查询 AX；包括方向键、数字小键盘等号和越界键。
+      const CGKeyCode passthrough[] = { kVK_ANSI_A, kVK_LeftArrow, kVK_ANSI_KeypadEquals,
+                                       KEYCODE_COUNT };
+      for (unsigned i = 0; i < sizeof passthrough / sizeof *passthrough; i++) {
+        checkKeyEvent(kCGEventKeyDown, passthrough[i], 0, 0, 0);
+        checkKeyEvent(kCGEventKeyUp, passthrough[i], 0, 0, 0);
+      }
       // 独立检查数字选词和具体键位；字符集合齐全并不能发现左右括号互换。
       const CGKeyCode digits[] = { kVK_ANSI_0, kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4,
                                   kVK_ANSI_5, kVK_ANSI_6, kVK_ANSI_7, kVK_ANSI_8, kVK_ANSI_9 };
-      for (unsigned i = 0; i < sizeof digits / sizeof *digits; i++)
-        assert(asciiSymbol(digits[i], 0, true, COMPOSITION_MARKED) == 0);
-      assert(asciiSymbol(kVK_ANSI_4, kCGEventFlagMaskShift, true, COMPOSITION_CLEAR) == '$');
-      assert(asciiSymbol(kVK_ANSI_5, kCGEventFlagMaskShift, true, COMPOSITION_CLEAR) == '%');
-      assert(asciiSymbol(kVK_ANSI_LeftBracket, 0, true, COMPOSITION_CLEAR) == '[');
-      assert(asciiSymbol(kVK_ANSI_RightBracket, 0, true, COMPOSITION_CLEAR) == ']');
-      assert(asciiSymbol(kVK_ANSI_Backslash, 0, true, COMPOSITION_CLEAR) == "\\"[0]);
-      assert(asciiSymbol(kVK_ANSI_Grave, 0, true, COMPOSITION_CLEAR) == 0x60); // 反引号。
+      for (unsigned i = 0; i < sizeof digits / sizeof *digits; i++) {
+        checkKeyEvent(kCGEventKeyDown, digits[i], 0, 0, 0);
+        checkKeyEvent(kCGEventKeyUp, digits[i], 0, 0, 0);
+      }
+      assert(asciiSymbol(kVK_ANSI_4, kCGEventFlagMaskShift, COMPOSITION_CLEAR) == '$');
+      assert(asciiSymbol(kVK_ANSI_5, kCGEventFlagMaskShift, COMPOSITION_CLEAR) == '%');
+      assert(asciiSymbol(kVK_ANSI_LeftBracket, 0, COMPOSITION_CLEAR) == '[');
+      assert(asciiSymbol(kVK_ANSI_RightBracket, 0, COMPOSITION_CLEAR) == ']');
+      assert(asciiSymbol(kVK_ANSI_Backslash, 0, COMPOSITION_CLEAR) == "\\"[0]);
+      assert(asciiSymbol(kVK_ANSI_Grave, 0, COMPOSITION_CLEAR) == 0x60); // 反引号。
+      // 自动重复必须覆盖配对槽位，即使后来变成数字、快捷键或组词保护键。
+      checkKeyEvent(kCGEventKeyDown, kVK_ANSI_4, kCGEventFlagMaskShift, '$', 0);
+      checkKeyEvent(kCGEventKeyDown, kVK_ANSI_4, 0, 0, 0);
+      checkKeyEvent(kCGEventKeyUp, kVK_ANSI_4, 0, 0, 0);
+      checkKeyEvent(kCGEventKeyDown, kVK_ANSI_4, kCGEventFlagMaskShift, '$', 0);
+      checkKeyEvent(kCGEventKeyDown, kVK_ANSI_4, kCGEventFlagMaskCommand, 0, 0);
+      checkKeyEvent(kCGEventKeyUp, kVK_ANSI_4, 0, 0, 0);
+      testCompositionState = COMPOSITION_CLEAR;
+      checkKeyEvent(kCGEventKeyDown, kVK_ANSI_Quote, 0, 39, 1);
+      testCompositionState = COMPOSITION_MARKED;
+      checkKeyEvent(kCGEventKeyDown, kVK_ANSI_Quote, 0, 0, 1);
+      checkKeyEvent(kCGEventKeyUp, kVK_ANSI_Quote, 0, 0, 0);
+      // 端口被禁用后清除配对，防止恢复时沿用旧按键。
+      const CGEventType disabled[] = { kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput };
+      for (unsigned i = 0; i < sizeof disabled / sizeof *disabled; i++) {
+        checkKeyEvent(kCGEventKeyDown, kVK_ANSI_4, kCGEventFlagMaskShift, '$', 0);
+        assert(handleKeyboardEvent(NULL, disabled[i], NULL, NULL) == NULL);
+        checkKeyEvent(kCGEventKeyUp, kVK_ANSI_4, 0, 0, 0);
+      }
       for (unsigned down = 0; down < 2; down++) {
         CGEventRef original = CGEventCreateKeyboardEvent(NULL, kVK_ANSI_4, down);
         CGEventSetFlags(original, kCGEventFlagMaskShift);
@@ -168,23 +239,9 @@ let
         CFRelease(result);
         CFRelease(original);
       }
-      puts("PASS: punctuation policy and event-copy checks");
+      puts("PASS: 32 symbols, shortcuts, composition queries, key pairing, reset and event copy");
     }
     #else
-    static CFMachPortRef eventTap;
-    /* 保存最近一次按下的替换字符，供抬键配对；自动重复会重新判断策略。 */
-    static UniChar keyDownSymbols[KEYCODE_COUNT];
-
-    /* TIS 只能判断输入源，不能判断是否正在组词。 */
-    static bool isApplePinyinSelected(void) {
-      TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
-      if (!source) return false;
-      CFStringRef identifier = TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
-      bool result = identifier && CFEqual(identifier, CFSTR("com.apple.inputmethod.SCIM.ITABC"));
-      CFRelease(source);
-      return result;
-    }
-
     /* 读取事件目标应用的焦点输入框，不能假定系统当前焦点就是事件目标。
        只查组词范围，不读正文；原生范围不支持时再尝试 WebKit 范围。
        未知状态只保护五个无 Shift 的敏感键，其他标点仍可转换。 */
@@ -225,6 +282,7 @@ let
       CFRelease(application);
       return result;
     }
+    #endif
 
     /* 标注后的位置兼顾实体键盘与定向投递；返回副本而非额外 post，避免递归。 */
     static CGEventRef handleKeyboardEvent(CGEventTapProxy proxy, CGEventType type,
@@ -240,14 +298,16 @@ let
       unsigned key = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
       if (key >= KEYCODE_COUNT) return event;
       UniChar value = keyDownSymbols[key];
-      // 抬键沿用按下结果，不因松开 Shift 或切换输入源而改变这次配对。
+      // 抬键沿用按下结果，不再检查修饰键或组词状态，也不查询 AX。
       if (type == kCGEventKeyUp) keyDownSymbols[key] = 0;
       else {
         CGEventFlags flags = CGEventGetFlags(event);
-        value = asciiSymbol(key, flags, isApplePinyinSelected(), COMPOSITION_CLEAR);
-        if (value && !(flags & kCGEventFlagMaskShift) && hasPinyinMeaning(key))
-          value = asciiSymbol(key, flags, true, compositionStateForProcess(
+        // 先排除无关按键和快捷键：只有五个无 Shift 敏感键需要同步查询 AX。
+        value = asciiSymbol(key, flags, COMPOSITION_CLEAR);
+        if (value && !(flags & kCGEventFlagMaskShift) && isCompositionKey(key))
+          value = asciiSymbol(key, flags, compositionStateForProcess(
             (pid_t)CGEventGetIntegerValueField(event, kCGEventTargetUnixProcessID)));
+        // 包括 0：重复按下变为透传时，不能让抬键沿用上次的替换字符。
         keyDownSymbols[key] = value;
       }
       // Quartz 接管并释放回调返回的副本；分配失败则保留原事件。
@@ -255,6 +315,7 @@ let
       return result ? result : event;
     }
 
+    #ifndef TEST
     /* 等待用户授权后启动；失权或端口失效时清理，恢复后重新连接。
        不替用户授予权限，仅记录服务启动状态，不记录按键。 */
     static void updateEventTap(CFRunLoopTimerRef timer, void *context) {
@@ -348,7 +409,7 @@ let
       /usr/bin/codesign --force --sign - "$out/Applications/PinyinASCII.app"
     '';
     meta = {
-      description = "ASCII punctuation for Apple Simplified Pinyin on macOS";
+      description = "ANSI-key ASCII punctuation across input sources on macOS";
       license = lib.licenses.mit;
       platforms = lib.platforms.darwin;
       mainProgram = "pinyin-ascii";
@@ -358,7 +419,7 @@ in
 {
   # 仅导入模块没有运行副作用；调用方显式 enable。package 可单独构建或 overrideAttrs。
   options.services.apple-pinyin-ascii-punctuation = {
-    enable = lib.mkEnableOption "Apple 简体拼音的 ASCII 标点转换";
+    enable = lib.mkEnableOption "macOS 全输入源的 ANSI 键位 ASCII 标点转换";
     package = lib.mkOption {
       type = lib.types.package;
       default = helper;
@@ -366,7 +427,8 @@ in
       description = ''
         后台原生程序包；替换时须保留
         Applications/PinyinASCII.app/Contents/MacOS/pinyin-ascii 路径。
-        默认包在构建时运行转换策略和事件副本测试。
+        默认包不查询输入源，按 ANSI 美式物理键位转换。
+        构建时测试转换策略、事件回调与副本；真实 AX 查询仍需交互验证。
       '';
     };
   };
