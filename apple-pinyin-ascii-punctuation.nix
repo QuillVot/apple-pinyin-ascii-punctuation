@@ -242,11 +242,30 @@ let
     }
     #endif
   '';
+  # 原创矢量图标使用路径和几何，不依赖系统字体或外部素材，保持模块可独立复制。
+  iconSvg = pkgs.writeText "pinyin-ascii.svg" ''
+    <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+      <defs>
+        <linearGradient id="blue" x1="0" y1="0" x2="0.8" y2="1">
+          <stop stop-color="#398FFF"/>
+          <stop offset="1" stop-color="#1454CD"/>
+        </linearGradient>
+        <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+          <feDropShadow dx="0" dy="18" stdDeviation="18" flood-color="#092B63" flood-opacity="0.22"/>
+        </filter>
+      </defs>
+      <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#blue)" filter="url(#shadow)"/>
+      <rect x="66" y="66" width="892" height="892" rx="198" fill="none" stroke="#FFF" stroke-opacity="0.18" stroke-width="2"/>
+      <path fill="#FFF" fill-rule="evenodd" d="M258 744 433 284H533L708 744H601L565 639H400L364 744ZM430 552H535L483 400Z"/>
+      <rect x="697" y="284" width="66" height="150" rx="17" fill="#FFF"/>
+    </svg>
+  '';
   helper = pkgs.stdenv.mkDerivation {
     pname = "pinyin-ascii";
     version = "1.0.0";
     src = source;
     dontUnpack = true;
+    nativeBuildInputs = [ pkgs.resvg ];
     buildPhase = ''
       runHook preBuild
       $CC -O2 -Wall -Wextra -Werror -framework ApplicationServices -framework Carbon "$src" -o pinyin-ascii
@@ -260,12 +279,21 @@ let
       app="$out/Applications/PinyinASCII.app/Contents"
       install -Dm755 pinyin-ascii "$app/MacOS/pinyin-ascii"
       install -Dm644 ${pkgs.writeText "PinyinASCII-LICENSE" licenseText} "$app/Resources/LICENSE"
+      # 标准 1x/2x 图标覆盖 16–1024 像素；渲染器只在构建期使用。
+      mkdir PinyinASCII.iconset
+      for size in 16 32 128 256 512; do
+        name="PinyinASCII.iconset/icon_''${size}x$size"
+        resvg --width "$size" ${iconSvg} "$name.png"
+        resvg --width "$((size * 2))" ${iconSvg} "$name@2x.png"
+      done
+      /usr/bin/iconutil --convert icns --output "$app/Resources/PinyinASCII.icns" PinyinASCII.iconset
       cp ${
         pkgs.writeText "Info.plist" (
           lib.generators.toPlist { escape = true; } {
             CFBundleIdentifier = "org.nixconfig.pinyin-ascii";
             CFBundleName = "PinyinASCII";
             CFBundleExecutable = "pinyin-ascii";
+            CFBundleIconFile = "PinyinASCII.icns";
             CFBundlePackageType = "APPL";
             CFBundleVersion = "1";
             CFBundleShortVersionString = "1.0.0";

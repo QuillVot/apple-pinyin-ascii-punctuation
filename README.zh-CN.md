@@ -8,6 +8,8 @@ PinyinASCII 的 Home Manager 模块，App 名为 `PinyinASCII.app`，命令为 `
 
 Nix 使用锁定的 nixpkgs 工具链及其 SDK 编译 C 程序，无需个人 SDK 路径。PinyinASCII 通过 macOS 事件监听端口常驻运行，默认没有菜单栏图标。
 
+App 图标为蓝色圆角方形，包含白色直引号和 A。SVG 源码内嵌在模块中，构建时通过 resvg 和 macOS `iconutil` 生成 `.icns`，不增加运行时依赖。
+
 ## 转换规则与前提
 
 - 模块启用时，通过 Home Manager 的 `targets.darwin.defaults` 声明 Apple 拼音“使用半角标点”（`usesHalfwidthPunctuation = true`）。原生输入法负责其余标点和拼音组词。

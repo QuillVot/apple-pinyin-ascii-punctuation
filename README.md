@@ -8,6 +8,8 @@ Combines Apple Pinyin's native halfwidth punctuation setting with a small ANSI U
 
 Nix compiles the C program with the SDK supplied by the pinned nixpkgs toolchain; no personal SDK path is needed. PinyinASCII runs as a native background program with a macOS event tap and no menu bar item by default.
 
+The app icon pairs a white A and straight quote on a blue rounded square. Its SVG source is embedded in the module and converted to an `.icns` file at build time with resvg and macOS `iconutil`; neither adds a runtime dependency.
+
 ## Behavior and requirements
 
 - When enabled, the module declares Apple Pinyin's **Use Halfwidth Punctuation** setting (`usesHalfwidthPunctuation = true`) through Home Manager's `targets.darwin.defaults`. Native handling remains responsible for the other punctuation and for Pinyin composition.
