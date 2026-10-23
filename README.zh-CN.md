@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/pinyin-ascii.png" alt="PinyinASCII 应用图标" width="128" height="128">
+</p>
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 # apple-pinyin-ascii-punctuation
@@ -114,7 +118,7 @@ open ./result/Applications/PinyinASCIIInputProbe.app
 - **ax-range** 根据进程 ID 查询焦点元素的组词范围属性，是独立的只读范围诊断工具，不读取正文；转换程序不调用它。
 - **event-tap-info** 通过 `CGGetEventTapList` 枚举事件监听端口元数据，不创建监听端口，也不读取按键。
 
-仓库只收录源码，构建输出、本地探针日志及其他生成产物不应进入 Git。
+仓库收录源码和文档图片；App 构建输出、本地探针日志及其他生成产物不应进入 Git。
 
 ## 手动验证与局限
 

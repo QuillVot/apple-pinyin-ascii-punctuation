@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/pinyin-ascii.png" alt="PinyinASCII app icon" width="128" height="128">
+</p>
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 # apple-pinyin-ascii-punctuation
@@ -114,7 +118,7 @@ open ./result/Applications/PinyinASCIIInputProbe.app
 - **ax-range** queries the focused element's composition-range attributes for the supplied process ID. It is a separate read-only range diagnostic, not a text-content reader; the converter does not use it.
 - **event-tap-info** enumerates tap metadata through `CGGetEventTapList`. It does not create event taps or read keystrokes.
 
-The repository contains source only. Build outputs, local probe logs and other generated artifacts do not belong in Git.
+The repository contains source and documentation images. App build outputs, local probe logs and other generated artifacts do not belong in Git.
 
 ## Interactive verification and limits
 
