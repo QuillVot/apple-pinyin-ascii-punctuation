@@ -31,6 +31,9 @@ in
 assert !disabled.config.services.apple-pinyin-ascii-punctuation.enable;
 assert map toString disabled.config.home.packages == map toString baseline.config.home.packages;
 assert disabled.config.launchd.agents == baseline.config.launchd.agents;
+assert disabled.config.targets.darwin.defaults == baseline.config.targets.darwin.defaults;
+assert
+  enabled.config.targets.darwin.defaults."com.apple.inputmethod.CoreChineseEngineFramework".usesHalfwidthPunctuation;
 assert agent.enable;
 assert builtins.elem package enabled.config.home.packages;
 assert agent.config.Label == "org.nix-community.home.pinyin-ascii";

@@ -4,17 +4,28 @@
 
 Home Manager module for PinyinASCII (`PinyinASCII.app`, command `pinyin-ascii`).
 
-Maps physical ANSI US key positions to ASCII punctuation across input sources on macOS. The complete Home Manager module, including its C source, build and tests, lives in [`apple-pinyin-ascii-punctuation.nix`](apple-pinyin-ascii-punctuation.nix).
+Combines Apple Pinyin's native halfwidth punctuation setting with a small ANSI US punctuation supplement on macOS. The complete Home Manager module, including its C source, build and tests, lives in [`apple-pinyin-ascii-punctuation.nix`](apple-pinyin-ascii-punctuation.nix).
 
-Nix compiles the C program with the SDK supplied by the pinned nixpkgs toolchain; no personal SDK path is needed. At runtime, PinyinASCII is a native background program using a macOS event tap and Accessibility APIs. It has no menu bar item by default.
+Nix compiles the C program with the SDK supplied by the pinned nixpkgs toolchain; no personal SDK path is needed. PinyinASCII runs as a native background program with a macOS event tap and no menu bar item by default.
 
-## Behavior
+## Behavior and requirements
 
-- Maps the 32 ASCII punctuation symbols without checking or restricting the selected input source.
-- Preserves events with Command, Option, Control or Fn held. Unshifted number keys remain available for candidate selection.
-- Preserves the five unshifted keys `'`, `-`, `=`, `[` and `]` while composition is active or its state is unknown, protecting `xi'an` and candidate navigation. Shifted punctuation still converts.
-- Only those five unshifted keys query composition state on key down. Other keys, shortcuts and all key-up events skip AX queries.
-- Copies the original keyboard event and changes its Unicode text, preserving its routing, key code, modifiers and repeat state.
+- When enabled, the module declares Apple Pinyin's **Use Halfwidth Punctuation** setting (`usesHalfwidthPunctuation = true`) through Home Manager's `targets.darwin.defaults`. Native handling remains responsible for the other punctuation and for Pinyin composition.
+- The converter supplements eleven punctuation characters. It uses physical ANSI US key positions across input sources, without looking up the selected input source or reading composition ranges or text contents.
+- Unshifted `[`, `]`, `-` and `=` always keep their original events, preserving Apple Pinyin's candidate navigation. Native input handling supplies their text when appropriate. Shifted `{`, `}` and `_` are supplemented; `+` uses native handling.
+- Command, Option, Control and Fn combinations, unshifted number keys and every key-up event pass through unchanged.
+- For a converted key down, the program creates a fresh keyboard event from a private event source, retains the physical key code, timestamp and repeat value, supplies the ASCII Unicode character and clears modifier flags.
+- Disable the target application's smart quotes and other punctuation replacements when literal ASCII output is required; they can change text after input processing.
+
+The private-source event construction follows the approach in [Tail Input](https://github.com/framecy/Tail-Input/blob/0a690ef8c88b79e7e49b745bdad37566e4dc0c80/Sources/TailInput/PunctuationService.swift#L150).
+
+The supplemental characters are:
+
+```text
+$ ^ _ { } \ ' " < > `
+```
+
+Use this full ASCII punctuation set as an interactive checklist. Native halfwidth punctuation and the supplement together target the full set; the converter does not rewrite every character:
 
 ```text
 !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~
@@ -46,7 +57,7 @@ modules = [
 ];
 ```
 
-`enable` defaults to `false`; importing the module alone does not install or start PinyinASCII. Apply your Home Manager configuration to enable the service.
+`enable` defaults to `false`; importing the module alone does not install or start PinyinASCII. Apply your Home Manager configuration to enable the service and declare native halfwidth punctuation. Your Home Manager version must provide `targets.darwin.defaults`.
 
 ## Build and checks
 
@@ -60,9 +71,9 @@ nix flake check --no-write-lock-file
 nix flake check --all-systems --no-build --no-write-lock-file
 ```
 
-The first check command builds the current system's package, module and tools checks. The package build tests all 32 mappings, modifier handling, composition policy and event-copy metadata. It also tests the actual event callback with a composition-query test double: query scope, key-down/up pairing, repeated key downs and state reset. The tools check builds the tools and tests their help arguments; it does not open the probe UI or start keyboard monitoring. The second command evaluates all declared Darwin systems without cross-building them. Neither command installs or activates a Home Manager configuration.
+The first check command builds the current system's package, module and tools checks. The package build tests the eleven supplemental mappings, shortcut and navigation-key passthrough, key-up passthrough and replacement-event properties. The tools check builds the tools and tests their help arguments; it does not open the probe UI or start keyboard monitoring. The second command evaluates all declared Darwin systems without cross-building them. Neither command installs or activates a Home Manager configuration.
 
-These checks do not establish that real applications expose useful composition ranges or that input-method navigation and permissions work interactively.
+These checks do not establish that real applications accept the replacement events, that native halfwidth punctuation is effective, or that candidate navigation and permissions work interactively.
 
 ## Permissions and service
 
@@ -98,23 +109,23 @@ open ./result/Applications/PinyinASCIIInputProbe.app
 ```
 
 - **input-probe** provides a native input field for interactive checks. It writes no event log by default; `--log ./probe.jsonl` explicitly enables JSONL logging. The App is `./result/Applications/PinyinASCIIInputProbe.app`; its CLI is `bin/pinyin-ascii-input-probe`.
-- **ax-range** queries the focused element's composition-range attributes for the supplied process ID. It is a read-only range diagnostic, not a text-content reader.
+- **ax-range** queries the focused element's composition-range attributes for the supplied process ID. It is a separate read-only range diagnostic, not a text-content reader; the converter does not use it.
 - **event-tap-info** enumerates tap metadata through `CGGetEventTapList`. It does not create event taps or read keystrokes.
 
 The repository contains source only. Build outputs, local probe logs and other generated artifacts do not belong in Git.
 
 ## Interactive verification and limits
 
-1. Test both ABC and Apple Simplified Pinyin. With no active composition, type all 32 symbols above using their physical ANSI keys. Check Command/Option/Control/Fn combinations, unshifted number selection, key repeats and releasing Shift before key up. Pasting the symbols does not test the conversion.
-2. Compose `xi'an` and confirm that the unshifted apostrophe remains a Pinyin separator.
-3. Expand the candidate window, press `]` to advance and `[` to return, and compare the candidate at the same numbered position before and after. A key-dispatch log alone does not prove that a page changed.
-4. Test `-` and ordinary ANSI `=` separately. ANSI `=` is virtual key 24; keypad `=` is key 81 and is outside this mapping. Validation observed macOS automation sending `equal` with an unexpected Shift modifier, so confirm ambiguous results with a physical key. A `=`/`-` round trip in a log is insufficient evidence that each individual key paged correctly.
+Physical validation of the installed revision is required; the checklist below is not a record of passing results.
 
-Applications may ignore event Unicode text or apply their own smart punctuation and text replacements. AX support varies: an unknown composition state preserves the five unshifted sensitive keys even under ABC; other mapped punctuation still converts.
+1. Enable native halfwidth punctuation and disable application smart quotes. In both ABC and Apple Simplified Pinyin, type the full symbol set above with physical ANSI keys while no composition is active. Also check Command/Option/Control/Fn combinations, unshifted number selection, repeats and releasing Shift before key up. Pasting the symbols does not test input processing.
+2. Compose `xi'an` and `chang'an`. Confirm that the apostrophe separates syllables and both words still produce normal Pinyin candidates. Also check literal single and double quotes outside composition.
+3. Expand a candidate window and test each of `]`, `[`, `-` and `=` individually. For each key, compare the candidate at the same numbered position before and after; a dispatch log or a forward/back round trip alone does not prove that each key paged. Use the physical ANSI `=` key (virtual key 24), not keypad `=` (key 81) or automation that adds Shift.
+4. Check shifted `{`, `}`, `_` and `+` individually, together with both quotes and the remaining supplemental symbols.
 
-Some frameworks return an empty AX attribute even during composition; an empty value is not a universal proof that composition is inactive. Directed synthetic key events can also behave differently from physical input. Verify separators and candidate navigation with physical keys in each application, especially Electron applications.
+Applications may ignore event Unicode text, translate from the physical key code, or apply their own text replacements. Directed synthetic events can also behave differently from physical input. Verify separators, quotes and candidate navigation in each target application, especially Electron applications.
 
-The mapping uses ANSI US physical key positions, not the selected input source's character layout. Other symbol layouts may therefore have their normal characters replaced. Other input methods are also affected, but their composition and navigation keys have not been individually verified; the five-key protection does not cover every input method's special keys. Build checks cannot replace these application-level checks.
+The converter uses ANSI US physical key positions across input sources. Other layouts may have their characters replaced, and other input methods' special keys have not been individually verified. Unshifted `[`, `]`, `-` and `=` remain native in every input source; their output depends on that input source and application. Native halfwidth punctuation and the supplement are separate parts of the behavior, and build checks cannot replace application-level checks.
 
 ## License and references
 
